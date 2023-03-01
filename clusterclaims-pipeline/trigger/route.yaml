@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: cluster-claimer-event-listener-route
+spec:
+  port:
+    # targets http-listener
+    targetPort: 8080 
+  to:
+    kind: Service
+    # generated name by default
+    name: el-cluster-claimer-event-listener
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: None 

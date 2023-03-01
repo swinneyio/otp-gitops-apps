@@ -1,0 +1,12 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: cluster-claimer-trigger-binding
+spec:
+  params:
+  - name: cluster-claim-name
+    value: $(body.data.cluster_claim_name)
+  - name: cluster-size
+    value: $(body.data.cluster_size)
+  - name: cloud-provider
+    value: $(body.data.cloud_provider)

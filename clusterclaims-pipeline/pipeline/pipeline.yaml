@@ -1,0 +1,147 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: cluster-claimer-pipeline
+spec:
+  params:
+    - default: 'git@github.com:otp-itz/otp-gitops.git'
+      description: Source code repository, use the SSH method
+      name: source-repo
+      type: string
+    - description: Name of the cluster to be claimed
+      name: cluster-claim-name
+      type: string
+    - default: small
+      description: 'T-shirt size for the cluster [small, medium, large]'
+      name: cluster-size
+      type: string
+    - default: azure
+      description: Cloud provider to run the cluster (azure only at the moment)
+      name: cloud-provider
+      type: string
+  tasks:
+    - name: clone-otp-gitops
+      params:
+        - name: url
+          value: $(params.source-repo)
+        - name: deleteExisting
+          value: 'true'
+        - name: verbose
+          value: 'true'
+        - name: gitInitImage
+          value: >-
+            gcr.io/tekton-releases/github.com/tektoncd/pipeline/cmd/git-init:v0.40.2
+        - name: userHome
+          value: /home/git
+      taskRef:
+        kind: Task
+        name: git-clone
+      workspaces:
+        - name: output
+          workspace: shared-data
+        - name: ssh-directory
+          workspace: git-cli-ssh-directory
+    - name: create-a-cluster-claim
+      params:
+        - name: path
+          value: >-
+            ./0-bootstrap/hub/4-clusters/argocd/clusterclaims/$(params.cloud-provider)-$(params.cluster-size)-$(params.cluster-claim-name).yaml
+        - name: contents
+          value: |-
+            apiVersion: argoproj.io/v1alpha1
+            kind: Application
+            metadata:
+              name: $(params.cloud-provider)-$(params.cluster-claim-name)
+              annotations:
+                argocd.argoproj.io/sync-wave: "360"
+              labels:
+                gitops.tier.layer: clusters
+              finalizers:
+                - resources-finalizer.argocd.argoproj.io
+            spec:
+              syncPolicy:
+                automated:
+                  prune: false
+                  selfHeal: true
+              destination:
+                namespace: openshift-gitops
+                server: https://kubernetes.default.svc
+              project: clusters
+              source:
+                path: clusterclaims
+                helm:
+                  values: |
+                    clusterClaimName: $(params.cluster-claim-name)
+                    clusterPoolName: $(params.cloud-provider)-$(params.cluster-size)-clusterpool
+                    managedCluster: 
+                      status: "false"
+        - name: mode
+          value: '600'
+      runAfter:
+        - clone-otp-gitops
+      taskRef:
+        kind: Task
+        name: write-file
+      workspaces:
+        - name: output
+          workspace: shared-data
+    - name: create-a-new-branch-and-commit
+      params:
+        - name: GIT_SCRIPT
+          value: |-
+            git config --global user.email "clusterclaim-service@otp.local"
+            git config --global user.name "Cluster claim service"
+            sed -i "24 i \ - argocd/clusterclaims/$(params.cloud-provider)-$(params.cluster-size)-$(params.cluster-claim-name).yaml" ./0-bootstrap/hub/4-clusters/kustomization.yaml
+            git add ./0-bootstrap/hub/4-clusters/kustomization.yaml
+            export BRANCH="clusterclaims/$(params.cloud-provider)-$(params.cluster-size)-$(params.cluster-claim-name)"
+            git checkout -b $BRANCH
+            git add ./0-bootstrap/hub/4-clusters/argocd/clusterclaims/$(params.cloud-provider)-$(params.cluster-size)-$(params.cluster-claim-name).yaml
+            git commit -m "⚠️ Creating a cluster claim"
+            git push --set-upstream origin $BRANCH
+        - name: USER_HOME
+          value: /root
+        - name: VERBOSE
+          value: 'true'
+      runAfter:
+        - create-a-cluster-claim
+      taskRef:
+        kind: Task
+        name: git-cli
+      workspaces:
+        - name: source
+          workspace: shared-data
+        - name: ssh-directory
+          workspace: git-cli-ssh-directory
+    - name: open-a-pull-request
+      params:
+        - name: GITHUB_HOST_URL
+          value: api.github.com
+        - name: REPO_FULL_NAME
+          value: otp-itz/otp-gitops
+        - name: AUTH_TYPE
+          value: Bearer
+        - name: HEAD
+          value: >-
+            clusterclaims/$(params.cloud-provider)-$(params.cluster-size)-$(params.cluster-claim-name)
+        - name: BASE
+          value: master
+        - name: BODY
+          value: >-
+            Claiming a $(params.cluster-size) on $(params.cloud-provider):
+            $(params.cluster-claim-name)
+        - name: TITLE
+          value: >-
+            Claiming a $(params.cluster-size) on $(params.cloud-provider):
+            $(params.cluster-claim-name)
+        - name: GITHUB_TOKEN_SECRET_NAME
+          value: otp-github-pat
+        - name: GITHUB_TOKEN_SECRET_KEY
+          value: pat
+      runAfter:
+        - create-a-new-branch-and-commit
+      taskRef:
+        kind: Task
+        name: github-open-pr
+  workspaces:
+    - name: shared-data
+    - name: git-cli-ssh-directory

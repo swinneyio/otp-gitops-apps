@@ -1,0 +1,51 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerTemplate
+metadata:
+  name: cluster-claimer-service-trigger-template
+spec:
+  params:
+  - name: source-repo
+    description: Source code repository, use the SSH method
+    default: git@github.com:otp-itz/otp-gitops.git
+  - name: cluster-claim-name
+    description: Name of the cluster to be claimed
+    default: cluster claim name
+  - name: cluster-size
+    description: 'T-shirt size for the cluster [small, medium, large]'
+    default: small
+  - name: cloud-provider
+    description: Cloud provider to run the cluster (azure only at the moment)
+    default: azure
+  resourcetemplates:
+  - apiVersion: tekton.dev/v1beta1
+    kind: PipelineRun
+    metadata:
+      generateName: cluster-claimer-pipeline-run-
+    spec:
+      pipelineRef:
+        name: cluster-claimer-pipeline
+      params:
+      - name: source-repo
+        value: $(tt.params.source-repo)
+      - name: cluster-claim-name
+        value: $(tt.params.cluster-claim-name)
+      - name: cluster-size
+        value: $(tt.params.cluster-size)
+      - name: cloud-provider
+        value: $(tt.params.cloud-provider)
+      serviceAccountName: pipeline
+      timeout: 1h0m0s
+      workspaces:
+      - name: shared-data
+        volumeClaimTemplate:
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 10Mi
+            storageClassName: ocs-storagecluster-cephfs
+            volumeMode: Filesystem
+      - name: git-cli-ssh-directory
+        secret:
+          secretName: otp-repo-ssh-bot-creds

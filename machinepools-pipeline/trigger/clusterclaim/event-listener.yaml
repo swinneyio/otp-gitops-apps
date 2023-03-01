@@ -1,0 +1,12 @@
+---
+apiVersion: triggers.tekton.dev/v1beta1
+kind: EventListener
+metadata:
+  name: machinepool-clusterclaim
+spec:
+  serviceAccountName: pipeline
+  triggers:
+    - bindings:
+        - ref: machinepool-for-clusterclaim-trigger-binding
+      template:
+        ref: machinepool-for-clusterclaim-trigger-template

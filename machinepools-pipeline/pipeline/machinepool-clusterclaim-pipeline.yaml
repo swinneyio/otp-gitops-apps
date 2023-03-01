@@ -1,0 +1,149 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: machinepool-for-clusterclaim-pipeline
+spec:
+  params:
+    - default: 'git@github.com:otp-itz/otp-gitops.git'
+      description: Source code repository, use the SSH method
+      name: source-repo
+      type: string
+    - description: Cluster claim to deploy machine pool into
+      name: cluster-claim-name
+      type: string
+    - default: azure
+      description: Cloud provider to run the cluster (azure only at the moment)
+      name: cloud-provider
+      type: string
+  tasks:
+    - name: wait-for-cluster-to-be-ready
+      taskRef:
+        name: openshift-client
+        kind: ClusterTask
+      params:
+        - name: SCRIPT
+          value: |
+            until oc get clusterclaims.hive.openshift.io -n rhacm-clusterpools $(params.cluster-claim-name) >/dev/null 2>&1; do
+              echo "Waiting for cluster claim $(params.cluster-claim-name) in rhacm-clusterpools..."
+              sleep 1
+            done
+            oc wait clusterclaims.hive.openshift.io -n rhacm-clusterpools $(params.cluster-claim-name) --for condition=ClusterRunning --timeout=2h
+    - name: clone-otp-gitops
+      params:
+        - name: url
+          value: $(params.source-repo)
+      taskRef:
+        kind: ClusterTask
+        name: git-clone
+      workspaces:
+        - name: output
+          workspace: shared-data
+        - name: ssh-directory
+          workspace: git-cli-ssh-directory
+      runAfter:
+        - wait-for-cluster-to-be-ready
+    - name: get-cluster-deployment-name
+      runAfter:
+        - clone-otp-gitops
+      taskRef:
+        kind: ClusterTask
+        name: openshift-client
+      params:
+        - name: SCRIPT
+          value: |
+            export CLUSTER_CLAIM_DEPLOYMENT=$(oc get clusterclaims.hive.openshift.io -n rhacm-clusterpools $(params.cluster-claim-name) -o=jsonpath='{.spec.namespace}')
+            cat <<EOF >>./0-bootstrap/hub/4-clusters/argocd/cluster-machinepools/$(params.cluster-claim-name)-storage.yaml
+            apiVersion: argoproj.io/v1alpha1
+            kind: Application
+            metadata:
+              name: $(params.cloud-provider)-$(params.cluster-claim-name)-machinepool
+              annotations:
+                argocd.argoproj.io/sync-wave: "361"
+              labels:
+                gitops.tier.layer: clusters
+              finalizers:
+                - resources-finalizer.argocd.argoproj.io
+            spec:
+              syncPolicy:
+                automated:
+                  prune: true
+                  selfHeal: true
+              destination:
+                namespace: openshift-gitops
+                server: https://kubernetes.default.svc
+              project: clusters
+              source:
+                repoURL: https://github.com/otp-itz/otp-gitops-infra.git
+                path: machinepools
+                helm:
+                  values: |
+                    cloudProvider:
+                      name: "$(params.cloud-provider)" # aws, azure, ibmcloud or vsphere
+                      managed: false # for roks, aro, rosa set to true
+                    # used in clusterDeploymentRef
+                    cloud:
+                      clusterName: $CLUSTER_CLAIM_DEPLOYMENT
+            EOF
+      workspaces:
+        - name: manifest-dir
+          workspace: shared-data
+    - name: create-a-new-branch-and-commit
+      params:
+        - name: GIT_SCRIPT
+          value: |-
+            git config --global user.email "machinepool-for-clusterclaim-service@otp.local"
+            git config --global user.name "Machine pools for cluster claims service"
+            sed -i "35 i \ - argocd/cluster-machinepools/$(params.cluster-claim-name)-storage.yaml" ./0-bootstrap/hub/4-clusters/kustomization.yaml
+            git add ./0-bootstrap/hub/4-clusters/kustomization.yaml
+            export BRANCH="machinepool/$(params.cloud-provider)-$(params.cluster-claim-name)"
+            git checkout -b $BRANCH
+            git add ./0-bootstrap/hub/4-clusters/argocd/cluster-machinepools/$(params.cluster-claim-name)-storage.yaml
+            git commit -m "⚠️ Deploying additional storage nodes for $(params.cluster-claim-name) on $(params.cloud-provider)"
+            git push --set-upstream origin $BRANCH
+        - name: USER_HOME
+          value: /root
+        - name: VERBOSE
+          value: 'true'
+      runAfter:
+        - get-cluster-deployment-name
+      taskRef:
+        kind: ClusterTask
+        name: git-cli
+      workspaces:
+        - name: source
+          workspace: shared-data
+        - name: ssh-directory
+          workspace: git-cli-ssh-directory
+    - name: open-a-pull-request
+      params:
+        - name: GITHUB_HOST_URL
+          value: api.github.com
+        - name: REPO_FULL_NAME
+          value: otp-itz/otp-gitops
+        - name: AUTH_TYPE
+          value: Bearer
+        - name: HEAD
+          value: >-
+            machinepool/$(params.cloud-provider)-$(params.cluster-claim-name)
+        - name: BASE
+          value: master
+        - name: BODY
+          value: >-
+            Creating a machine pool for $(params.cluster-claim-name) on $(params.cloud-provider)
+        - name: TITLE
+          value: >-
+            Creating a machine pool for $(params.cluster-claim-name) on $(params.cloud-provider)
+        - name: GITHUB_TOKEN_SECRET_NAME
+          value: otp-github-pat
+        - name: GITHUB_TOKEN_SECRET_KEY
+          value: pat
+      runAfter:
+        - create-a-new-branch-and-commit
+      taskRef:
+        kind: Task
+        name: github-open-pr
+  workspaces:
+    - name: shared-data
+    - name: git-cli-ssh-directory
+
+    

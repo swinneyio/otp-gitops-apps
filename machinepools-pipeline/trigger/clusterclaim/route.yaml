@@ -1,0 +1,15 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: machinepool-clusterclaim
+spec:
+  port:
+    # targets http-listener
+    targetPort: 8080 
+  to:
+    kind: Service
+    # generated name by default
+    name: el-machinepool-clusterclaim
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: None 

@@ -1,0 +1,10 @@
+apiVersion: triggers.tekton.dev/v1beta1
+kind: TriggerBinding
+metadata:
+  name: machinepool-for-clusterclaim-trigger-binding
+spec:
+  params:
+  - name: cluster-claim-name
+    value: $(body.data.cluster_claim_name)
+  - name: cloud-provider
+    value: $(body.data.cloud_provider)
